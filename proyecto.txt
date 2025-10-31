@@ -1,0 +1,743 @@
+package database
+
+import (
+	"fmt"
+	"log"
+	"os"
+
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+)
+
+var DB *gorm.DB
+
+func Connect() {
+	host := os.Getenv("DB_HOST")
+	user := os.Getenv("DB_USER")
+	password := os.Getenv("DB_PASSWORD")
+	dbname := os.Getenv("DB_NAME")
+	port := os.Getenv("DB_PORT")
+
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable",
+		host, user, password, dbname, port)
+
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		log.Fatalf("❌ Error al conectar a la base de datos: %v", err)
+	}
+
+	DB = db
+	log.Println("✅ Conectado a PostgreSQL correctamente")
+}
+
+--------------
+package models
+
+type Categoria struct {
+	ID     uint   `gorm:"primaryKey" json:"id"`
+	Nombre string `json:"nombre"`
+	Icono  string `json:"icono"`
+}
+
+-----------------
+package models
+
+import "time"
+
+type Gasto struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	Descripcion string    `json:"descripcion"`
+	Monto       float64   `json:"monto"`
+	Fecha       time.Time `json:"fecha"`
+	CategoriaID uint      `json:"categoria_id"`
+	Categoria   Categoria `json:"categoria" gorm:"foreignKey:CategoriaID"`
+}
+-------------------
+package routes
+
+import (
+	"backend/database"
+	"backend/models"
+	"github.com/gin-gonic/gin"
+	"net/http"
+)
+
+// Obtener todas las categorías
+func GetCategorias(c *gin.Context) {
+	var categorias []models.Categoria
+	database.DB.Find(&categorias)
+	c.JSON(http.StatusOK, categorias)
+}
+
+// Crear una nueva categoría
+func CreateCategoria(c *gin.Context) {
+	var categoria models.Categoria
+	if err := c.ShouldBindJSON(&categoria); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	database.DB.Create(&categoria)
+	c.JSON(http.StatusCreated, categoria)
+}
+-------------------
+package routes
+
+import (
+	"backend/database"
+	"backend/models"
+	"github.com/gin-gonic/gin"
+	"net/http"
+)
+
+// Obtener todos los gastos
+func GetGastos(c *gin.Context) {
+	var gastos []models.Gasto
+	database.DB.Preload("Categoria").Find(&gastos)
+	c.JSON(http.StatusOK, gastos)
+}
+
+// Crear un nuevo gasto
+func CreateGasto(c *gin.Context) {
+	var gasto models.Gasto
+	if err := c.ShouldBindJSON(&gasto); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	database.DB.Create(&gasto)
+	c.JSON(http.StatusCreated, gasto)
+}
+
+// Eliminar un gasto por ID
+func DeleteGasto(c *gin.Context) {
+	id := c.Param("id")
+	var gasto models.Gasto
+
+	if err := database.DB.First(&gasto, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Gasto no encontrado"})
+		return
+	}
+
+	database.DB.Delete(&gasto)
+	c.JSON(http.StatusOK, gin.H{"message": "Gasto eliminado correctamente"})
+}
+----------------------
+# Etapa de compilación
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN go build -o backend main.go
+
+# Etapa final
+FROM alpine:3.20
+
+WORKDIR /app
+COPY --from=builder /app/backend .
+
+EXPOSE 8080
+CMD ["./backend"]
+---------------------
+package main
+
+import (
+	"backend/database"
+	"backend/models"
+	"backend/routes"
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
+	"time"
+)
+
+func main() {
+	r := gin.Default()
+
+	// ✅ Configuración de CORS (permite llamadas desde tu frontend)
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"http://localhost:3000", "http://192.168.80.80:3000"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}))
+
+	// ✅ Conexión a la base de datos
+	database.Connect()
+	database.DB.AutoMigrate(&models.Categoria{}, &models.Gasto{})
+
+	// ✅ Ruta de prueba
+	r.GET("/", func(c *gin.Context) {
+		c.JSON(200, gin.H{"message": "API de Finanzas funcionando 🚀"})
+	})
+
+	// ✅ CRUD Categorías
+	r.GET("/categorias", routes.GetCategorias)
+	r.POST("/categorias", routes.CreateCategoria)
+
+	// ✅ CRUD Gastos
+	r.GET("/gastos", routes.GetGastos)
+	r.POST("/gastos", routes.CreateGasto)
+	r.DELETE("/gastos/:id", routes.DeleteGasto)
+
+	// ✅ Iniciar servidor
+	r.Run(":8080")
+}
+--------------------------
+"use client";
+
+import { useEffect, useState } from "react";
+import { fetchCategorias, crearCategoria } from "../lib/api";
+
+interface Categoria {
+  id: number;
+  nombre: string;
+}
+
+export default function CategoriasPage() {
+  const [categorias, setCategorias] = useState<Categoria[]>([]);
+  const [nombre, setNombre] = useState("");
+
+  useEffect(() => {
+    obtenerCategorias();
+  }, []);
+
+  const obtenerCategorias = async () => {
+    const data = await fetchCategorias();
+    setCategorias(data);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!nombre.trim()) return;
+    await crearCategoria(nombre);
+    setNombre("");
+    obtenerCategorias();
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 flex flex-col items-center py-10 px-4">
+      <div className="w-full max-w-md bg-white rounded-2xl shadow-md p-6">
+        <h1 className="text-2xl font-bold text-center text-gray-800 mb-4">
+          📂 Categorías
+        </h1>
+
+        <form onSubmit={handleSubmit} className="flex gap-2 mb-6">
+          <input
+            type="text"
+            value={nombre}
+            onChange={(e) => setNombre(e.target.value)}
+            placeholder="Nueva categoría..."
+            className="flex-1 border rounded-lg px-3 py-2 focus:ring focus:ring-indigo-300 outline-none"
+          />
+          <button
+            type="submit"
+            className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition"
+          >
+            Agregar
+          </button>
+        </form>
+
+        <ul className="divide-y divide-gray-200">
+          {categorias.map((cat) => (
+            <li
+              key={cat.id}
+              className="py-2 px-2 hover:bg-gray-100 rounded-lg transition"
+            >
+              <span className="text-gray-700">{cat.nombre}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+------------------
+"use client";
+import { useState, useEffect } from "react";
+import { fetchCategorias, crearCategoria } from "../lib/api";
+
+export default function CategoriaForm() {
+  const [categorias, setCategorias] = useState<any[]>([]);
+  const [nombre, setNombre] = useState("");
+
+  const cargarCategorias = async () => {
+    const data = await fetchCategorias();
+    setCategorias(data);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await crearCategoria(nombre);
+    setNombre("");
+    cargarCategorias();
+  };
+
+  useEffect(() => {
+    cargarCategorias();
+  }, []);
+
+  return (
+    <div className="bg-white shadow-md p-6 rounded-lg w-full max-w-md">
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4 mb-6">
+        <input
+          type="text"
+          placeholder="Nombre de la categoría"
+          value={nombre}
+          onChange={(e) => setNombre(e.target.value)}
+          className="border p-2 rounded"
+          required
+        />
+        <button
+          type="submit"
+          className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+        >
+          Agregar Categoría
+        </button>
+      </form>
+
+      <ul className="divide-y">
+        {categorias.map((cat) => (
+          <li key={cat.id} className="py-2">
+            {cat.nombre}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+---------------------
+"use client";
+import { useState, useEffect } from "react";
+import { fetchCategorias, fetchGastos, crearGasto } from "../lib/api";
+
+export default function GastoForm() {
+  const [categorias, setCategorias] = useState<any[]>([]);
+  const [gastos, setGastos] = useState<any[]>([]);
+  const [descripcion, setDescripcion] = useState("");
+  const [monto, setMonto] = useState("");
+  const [categoriaId, setCategoriaId] = useState("");
+
+  const cargarDatos = async () => {
+    setCategorias(await fetchCategorias());
+    setGastos(await fetchGastos());
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await crearGasto(descripcion, parseFloat(monto), parseInt(categoriaId));
+    setDescripcion("");
+    setMonto("");
+    cargarDatos();
+  };
+
+  useEffect(() => {
+    cargarDatos();
+  }, []);
+
+  return (
+    <div className="bg-white shadow-md p-6 rounded-lg w-full max-w-md">
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4 mb-6">
+        <input
+          type="text"
+          placeholder="Descripción"
+          value={descripcion}
+          onChange={(e) => setDescripcion(e.target.value)}
+          className="border p-2 rounded"
+          required
+        />
+        <input
+          type="number"
+          placeholder="Monto"
+          value={monto}
+          onChange={(e) => setMonto(e.target.value)}
+          className="border p-2 rounded"
+          required
+        />
+        <select
+          value={categoriaId}
+          onChange={(e) => setCategoriaId(e.target.value)}
+          className="border p-2 rounded"
+          required
+        >
+          <option value="">Selecciona una categoría</option>
+          {categorias.map((cat) => (
+            <option key={cat.id} value={cat.id}>
+              {cat.nombre}
+            </option>
+          ))}
+        </select>
+        <button
+          type="submit"
+          className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
+        >
+          Registrar Gasto
+        </button>
+      </form>
+
+      <ul className="divide-y">
+        {gastos.map((g) => (
+          <li key={g.id} className="py-2">
+            {g.descripcion} — ${g.monto} ({g.categoria?.nombre})
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+---------------------------
+"use client";
+
+import { useEffect, useState } from "react";
+import { fetchGastos, crearGasto, fetchCategorias } from "../lib/api";
+
+interface Gasto {
+  id: number;
+  descripcion: string;
+  monto: number;
+  categoria_id: number;
+  categoria?: { nombre: string };
+}
+
+interface Categoria {
+  id: number;
+  nombre: string;
+}
+
+export default function GastosPage() {
+  const [gastos, setGastos] = useState<Gasto[]>([]);
+  const [categorias, setCategorias] = useState<Categoria[]>([]);
+  const [descripcion, setDescripcion] = useState("");
+  const [monto, setMonto] = useState("");
+  const [categoriaId, setCategoriaId] = useState<number | "">("");
+
+  useEffect(() => {
+    obtenerGastos();
+    obtenerCategorias();
+  }, []);
+
+  const obtenerGastos = async () => {
+    const data = await fetchGastos();
+    setGastos(data);
+  };
+
+  const obtenerCategorias = async () => {
+    const data = await fetchCategorias();
+    setCategorias(data);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!descripcion.trim() || !monto || !categoriaId) return;
+    await crearGasto(descripcion, parseFloat(monto), Number(categoriaId));
+    setDescripcion("");
+    setMonto("");
+    setCategoriaId("");
+    obtenerGastos();
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 flex flex-col items-center py-10 px-4">
+      <div className="w-full max-w-2xl bg-white rounded-2xl shadow-md p-6">
+        <h1 className="text-2xl font-bold text-center text-gray-800 mb-4">
+          💸 Registro de Gastos
+        </h1>
+
+        <form
+          onSubmit={handleSubmit}
+          className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-8"
+        >
+          <input
+            type="text"
+            value={descripcion}
+            onChange={(e) => setDescripcion(e.target.value)}
+            placeholder="Descripción"
+            className="border rounded-lg px-3 py-2 focus:ring focus:ring-indigo-300 outline-none"
+          />
+          <input
+            type="number"
+            step="0.01"
+            value={monto}
+            onChange={(e) => setMonto(e.target.value)}
+            placeholder="Monto"
+            className="border rounded-lg px-3 py-2 focus:ring focus:ring-indigo-300 outline-none"
+          />
+          <select
+            value={categoriaId}
+            onChange={(e) => setCategoriaId(Number(e.target.value))}
+            className="border rounded-lg px-3 py-2 focus:ring focus:ring-indigo-300 outline-none"
+          >
+            <option value="">Categoría</option>
+            {categorias.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.nombre}
+              </option>
+            ))}
+          </select>
+          <button
+            type="submit"
+            className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition"
+          >
+            Agregar
+          </button>
+        </form>
+
+        <table className="w-full text-left border-collapse">
+          <thead>
+            <tr className="bg-indigo-100">
+              <th className="py-2 px-3 rounded-tl-lg">Descripción</th>
+              <th className="py-2 px-3">Monto</th>
+              <th className="py-2 px-3 rounded-tr-lg">Categoría</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200">
+            {gastos.map((g) => (
+              <tr key={g.id} className="hover:bg-gray-50">
+                <td className="py-2 px-3">{g.descripcion}</td>
+                <td className="py-2 px-3">${g.monto.toFixed(2)}</td>
+                <td className="py-2 px-3">
+                  {g.categoria?.nombre || "Sin categoría"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+-------------------------------------------
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+
+export async function fetchCategorias() {
+  const res = await fetch(`${API_URL}/categorias`);
+  return res.json();
+}
+
+export async function crearCategoria(nombre: string) {
+  const res = await fetch(`${API_URL}/categorias`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nombre }),
+  });
+  return res.json();
+}
+
+export async function fetchGastos() {
+  const res = await fetch(`${API_URL}/gastos`);
+  return res.json();
+}
+
+export async function crearGasto(descripcion: string, monto: number, categoria_id: number) {
+  const res = await fetch(`${API_URL}/gastos`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ descripcion, monto, categoria_id }),
+  });
+  return res.json();
+}
+-------------------
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Puedes agregar estilos globales personalizados debajo si quieres */
+body {
+  background-color: #f9fafb;
+  color: #1f2937;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+-----------------
+import "./globals.css";
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Finanzas App",
+  description: "Gestión de gastos y categorías con Go + Next.js",
+};
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <html lang="es">
+      <body className="bg-gray-100 text-gray-900 min-h-screen flex flex-col items-center justify-start p-8">
+        <main className="w-full max-w-4xl">{children}</main>
+      </body>
+    </html>
+  );
+}
+------------------------
+import Link from "next/link";
+
+export default function Home() {
+  return (
+    <main className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-indigo-100 via-blue-50 to-white text-gray-800 p-8">
+      <div className="text-center">
+        <h1 className="text-5xl font-extrabold text-indigo-700 mb-3 drop-shadow-sm">
+          💸 Finanzas Personales
+        </h1>
+        <p className="text-gray-600 text-lg mb-8">
+          Administra tus categorías y gastos de forma sencilla y rápida
+        </p>
+      </div>
+
+      <div className="flex flex-col sm:flex-row gap-5">
+        <Link
+          href="/categorias"
+          className="bg-indigo-600 text-white px-8 py-3 rounded-xl text-lg font-medium shadow-md hover:shadow-lg hover:bg-indigo-700 transition transform hover:-translate-y-1 text-center"
+        >
+          📂 Gestionar Categorías
+        </Link>
+
+        <Link
+          href="/gastos"
+          className="bg-green-500 text-white px-8 py-3 rounded-xl text-lg font-medium shadow-md hover:shadow-lg hover:bg-green-600 transition transform hover:-translate-y-1 text-center"
+        >
+          💰 Registrar Gastos
+        </Link>
+      </div>
+
+      <footer className="mt-12 text-gray-500 text-sm">
+        © {new Date().getFullYear()} Desarrollado con ❤️ y Next.js
+      </footer>
+    </main>
+  );
+}
+----------------------
+NEXT_PUBLIC_API_URL=http://localhost:8080
+------------------------
+# Etapa de construcción
+FROM node:22-alpine AS builder
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm install
+
+COPY . .
+RUN npm run build
+
+# Etapa final
+FROM node:22-alpine AS runner
+WORKDIR /app
+
+COPY --from=builder /app ./
+EXPOSE 3000
+
+CMD ["npm", "run", "start"]
+-----------------
+
+import { defineConfig, globalIgnores } from "eslint/config";
+import nextVitals from "eslint-config-next/core-web-vitals";
+import nextTs from "eslint-config-next/typescript";
+
+const eslintConfig = defineConfig([
+  ...nextVitals,
+  ...nextTs,
+  // Override default ignores of eslint-config-next.
+  globalIgnores([
+    // Default ignores of eslint-config-next:
+    ".next/**",
+    "out/**",
+    "build/**",
+    "next-env.d.ts",
+  ]),
+]);
+
+export default eslintConfig;
+------------------
+declare module "*.css";
+-----------
+/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+import "./.next/dev/types/routes.d.ts";
+
+// NOTE: This file should not be edited
+// see https://nextjs.org/docs/app/api-reference/config/typescript for more information.
+--------------
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  /* config options here */
+  reactCompiler: true,
+};
+
+export default nextConfig;
+--------------
+module.exports = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+};
+----------------------
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: [
+    "./src/app/**/*.{js,ts,jsx,tsx}",
+    "./src/components/**/*.{js,ts,jsx,tsx}",
+  ],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+};
+---------------
+services:
+  db:
+    image: postgres:13
+    container_name: finanzas-db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: finanzas
+    ports:
+      - "5432:5432" # Permite conectarte desde pgAdmin
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - finanzas-net
+
+  backend:
+    build: ./backend
+    container_name: finanzas-backend
+    restart: always
+    environment:
+      DB_HOST: db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: finanzas
+      DB_PORT: 5432
+      PORT: 8080
+    depends_on:
+      - db
+    ports:
+      - "8080:8080"
+    networks:
+      - finanzas-net
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: finanzas-frontend
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://finanzas-backend:8080
+    depends_on:
+      - backend
+    networks:
+      - finanzas-net
+
+volumes:
+  postgres_data:
+
+networks:
+  finanzas-net:

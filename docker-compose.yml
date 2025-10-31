@@ -1,0 +1,52 @@
+services:
+  db:
+    image: postgres:13
+    container_name: finanzas-db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: finanzas
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - finanzas-net
+
+  backend:
+    build: ./backend
+    container_name: finanzas-backend
+    restart: always
+    environment:
+      DB_HOST: db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: finanzas
+      DB_PORT: 5432
+      PORT: 8080
+    depends_on:
+      - db
+    ports:
+      - "8080:8080"
+    networks:
+      - finanzas-net
+
+  frontend:
+    build: ./frontend
+    container_name: finanzas-frontend
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://finanzas-backend:8080
+    depends_on:
+      - backend
+    networks:
+      - finanzas-net
+
+volumes:
+  postgres_data:
+
+networks:
+  finanzas-net:
